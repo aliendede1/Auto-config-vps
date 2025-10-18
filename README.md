@@ -44,5 +44,6 @@ Este script automatiza a configuração de uma VPS Alpine, preparando-a para des
 
 
 ```bash
-wget <link_do_script.sh> -O vps_setup.sh
-chmod +
+git clone https://github.com/aliendede1/Server-Alpine.git
+chmod +x *.sh
+./install-vps.sh
