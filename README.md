@@ -1,3 +1,13 @@
+## Como usar
+
+```bash
+git clone https://github.com/aliendede1/Server-Alpine.git
+chmod +x *.sh
+./install-vps.sh
+```
+
+> O script detecta automaticamente sua distribuição e ajusta os comandos de instalação para Debian, Ubuntu, Fedora, Arch, Void ou Alpine.
+
 
 ---
 
@@ -51,14 +61,3 @@ Este script automatiza a configuração de uma VPS, preparando-a para desenvolvi
 
 ---
 
-## Como usar
-
-```bash
-git clone https://github.com/aliendede1/Server-Alpine.git
-chmod +x *.sh
-./install-vps.sh
-```
-
-> O script detecta automaticamente sua distribuição e ajusta os comandos de instalação para Debian, Ubuntu, Fedora, Arch, Void ou Alpine.
-
----
