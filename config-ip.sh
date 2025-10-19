@@ -1,10 +1,29 @@
 #!/bin/sh
+# ============================================================
+# Script universal ultra-automático para configurar VPS
+# Inclui: IP estático, DNS e hostname
+# Compatível com: Alpine, Debian, Ubuntu, Fedora, Arch
+# ============================================================
 
-# Script ultra-automático para configurar IP público no Alpine Linux
+set -e
 
-echo "===== Configuração Ultra-Automática de IP Público ====="
+echo "===== Configuração Automática Ultra (IP + DNS + Hostname) ====="
 
+# ------------------------------
+# Detectar distribuição
+# ------------------------------
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    DISTRO=$ID
+else
+    echo "Não foi possível detectar a distribuição."
+    exit 1
+fi
+echo "Distribuição detectada: $DISTRO"
+
+# ------------------------------
 # Detectar interface ativa
+# ------------------------------
 INTERFACE=$(ip route | grep '^default' | awk '{print $5}')
 if [ -z "$INTERFACE" ]; then
     echo "Não foi possível detectar a interface de rede automaticamente."
@@ -12,69 +31,128 @@ if [ -z "$INTERFACE" ]; then
 fi
 echo "Interface detectada: $INTERFACE"
 
-# Detectar gateway padrão
+# ------------------------------
+# Detectar gateway e CIDR
+# ------------------------------
 GATEWAY=$(ip route | grep '^default' | awk '{print $3}')
-echo "Gateway detectado: $GATEWAY"
+CIDR=$(ip addr show "$INTERFACE" | grep 'inet ' | awk '{print $2}' | head -n1)
+NETMASK_CIDR=$(echo "$CIDR" | cut -d'/' -f2)
 
-# Detectar máscara padrão (usando CIDR da interface)
-CIDR=$(ip addr show $INTERFACE | grep 'inet ' | awk '{print $2}' | head -n1)
-NETMASK_CIDR=$(echo $CIDR | cut -d'/' -f2)
-
-# Converter CIDR para máscara tradicional
+# Função para converter CIDR → máscara
 mask2netmask() {
-    c=$1
-    b=""
+    local c=$1
+    local b=""
     for i in 1 2 3 4; do
-        if [ $c -ge 8 ]; then
-            b="$b255"
+        if [ "$c" -ge 8 ]; then
+            b="${b}255"
             c=$((c-8))
         else
             val=$((256 - 2**(8-c)))
-            b="$b$val"
+            b="${b}${val}"
             c=0
         fi
-        [ $i -lt 4 ] && b="$b."
+        [ "$i" -lt 4 ] && b="${b}."
     done
-    echo $b
+    echo "$b"
 }
-NETMASK=$(mask2netmask $NETMASK_CIDR)
+
+NETMASK=$(mask2netmask "$NETMASK_CIDR")
 echo "Máscara detectada: $NETMASK"
 
-# Detectar IP público atual
-CURRENT_PUBLIC_IP=$(curl -s ifconfig.me)
-echo "IP público atual detectado: $CURRENT_PUBLIC_IP"
+# ------------------------------
+# Detectar IP público
+# ------------------------------
+IP=$(curl -s ifconfig.me)
+echo "IP público detectado: $IP"
 
-# Perguntar se quer usar o IP atual ou digitar outro
-read -p "Deseja usar o IP detectado ($CURRENT_PUBLIC_IP)? [S/n]: " USAR_ATUAL
-USAR_ATUAL=${USAR_ATUAL:-S}
+# ------------------------------
+# Definir DNS e hostname padrão
+# ------------------------------
+DNS="1.1.1.1,8.8.8.8"
+HOSTNAME="vps-$(date +%s | sha256sum | cut -c1-6)"  # Hostname único
 
-if [ "$USAR_ATUAL" = "S" ] || [ "$USAR_ATUAL" = "s" ]; then
-    IP=$CURRENT_PUBLIC_IP
-else
-    read -p "Digite o IP público que deseja configurar: " IP
-fi
+echo "DNS definido: $DNS"
+echo "Hostname definido: $HOSTNAME"
 
-# Backup do arquivo original
-if [ -f /etc/network/interfaces ]; then
-    cp /etc/network/interfaces /etc/network/interfaces.bak
-    echo "Backup do /etc/network/interfaces criado em /etc/network/interfaces.bak"
-fi
+# ------------------------------
+# Aplicar configuração
+# ------------------------------
+echo "Aplicando configuração no $DISTRO..."
 
-# Criar configuração estática
-cat > /etc/network/interfaces <<EOL
+case "$DISTRO" in
+    alpine)
+        cp /etc/network/interfaces /etc/network/interfaces.bak 2>/dev/null || true
+        cat > /etc/network/interfaces <<EOL
 auto $INTERFACE
 iface $INTERFACE inet static
     address $IP
     netmask $NETMASK
     gateway $GATEWAY
 EOL
+        echo "nameserver $(echo $DNS | cut -d',' -f1)" > /etc/resolv.conf
+        rc-service networking restart || (ifdown "$INTERFACE" && ifup "$INTERFACE")
+        ;;
+        
+    debian|ubuntu)
+        mkdir -p /etc/netplan
+        cat > /etc/netplan/01-static.yaml <<EOL
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    $INTERFACE:
+      dhcp4: no
+      addresses: [$IP/$NETMASK_CIDR]
+      gateway4: $GATEWAY
+      nameservers:
+        addresses: [$(echo $DNS | sed 's/,/, /g')]
+EOL
+        netplan apply
+        ;;
+        
+    fedora)
+        nmcli con mod "$INTERFACE" ipv4.addresses "$IP/$NETMASK_CIDR"
+        nmcli con mod "$INTERFACE" ipv4.gateway "$GATEWAY"
+        nmcli con mod "$INTERFACE" ipv4.dns "$(echo $DNS | sed 's/,/ /g')"
+        nmcli con mod "$INTERFACE" ipv4.method manual
+        nmcli con up "$INTERFACE"
+        ;;
+        
+    arch)
+        mkdir -p /etc/systemd/network
+        cat > /etc/systemd/network/20-static.network <<EOL
+[Match]
+Name=$INTERFACE
 
-echo "Configuração aplicada ao /etc/network/interfaces."
+[Network]
+Address=$IP/$NETMASK_CIDR
+Gateway=$GATEWAY
+DNS=$(echo $DNS | sed 's/,/ /g')
+EOL
+        systemctl restart systemd-networkd
+        ;;
+        
+    *)
+        echo "Distribuição $DISTRO ainda não suportada automaticamente."
+        exit 1
+        ;;
+esac
 
-# Reiniciar a interface
-echo "Reiniciando a interface $INTERFACE..."
-ifdown $INTERFACE 2>/dev/null
-ifup $INTERFACE
+# ------------------------------
+# Configurar hostname
+# ------------------------------
+echo "$HOSTNAME" > /etc/hostname
+hostnamectl set-hostname "$HOSTNAME"
 
-echo "IP estático configurado com sucesso!"
-ip addr show $INTERFACE
+# ------------------------------
+# Final
+# ------------------------------
+echo
+echo "✅ Configuração ultra-automática concluída!"
+echo "IP: $IP"
+echo "Gateway: $GATEWAY"
+echo "Máscara: $NETMASK"
+echo "DNS: $DNS"
+echo "Hostname: $HOSTNAME"
+echo
+ip addr show "$INTERFACE"
