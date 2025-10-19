@@ -2,6 +2,7 @@
 
 ```bash
 git clone https://github.com/aliendede1/Server-Alpine.git
+cd Server-Alpine
 chmod +x *.sh
 ./install-vps.sh
 ```
